@@ -1,5 +1,5 @@
-import express from "express";
-import nodemailer from "nodemailer";
+const express = require("express");
+const nodemailer = require("nodemailer");
 
 const router = express.Router();
 
@@ -20,7 +20,7 @@ router.post("/report-clone", async (req, res) => {
     console.log("Clone detected:", domain, url);
 
     // Email admins that someone is copying your site
-    const admins = process.env.ADMIN_EMAILS.split(",");
+    const admins = process.env.ADMIN_EMAILS.split(",").map(e => e.trim());
 
     await transporter.sendMail({
       from: `"GuardianshipApp Security" <${process.env.SMTP_USER}>`,
@@ -43,4 +43,4 @@ router.post("/report-clone", async (req, res) => {
   }
 });
 
-export default router;
+module.exports = router;
