@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: guardianship-server
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    plan: free
+    branch: main
+    autoDeploy: true
+    envVars:
+      DISABLE_CACHE: "true"
