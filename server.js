@@ -1,49 +1,32 @@
-// ============================================
-// FILE: guardianship-server/server.js
-// ============================================
 const express = require('express');
-const cors = require('cors');
 const bodyParser = require('body-parser');
+const cors = require('cors');
 require('dotenv').config();
+
+const notifyRoutes = require('./routes/notifyRoutes');
+const userRoutes = require('./routes/userRoutes');
+const reportRoutes = require('./routes/reportRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Import routes
-const alertRoutes = require('./routes/alertRoutes');
-const userRoutes = require('./routes/userRoutes');
-const broadcastRoutes = require('./routes/broadcastRoutes');
-const notificationRoutes = require('./routes/notificationRoutes');
+app.use(cors());
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true }));
 
-// Middleware
-app.use(cors({
-  origin: '*',
-  credentials: false
-}));
-app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'GuardianshipApp Backend is running' });
-});
+// Health
+app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
 // Routes
-app.use('/api', alertRoutes);
+app.use('/api', notifyRoutes);
 app.use('/api', userRoutes);
-app.use('/api', broadcastRoutes);
-app.use('/api', notificationRoutes);
+app.use('/api', reportRoutes);
 
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('Error:', err);
-  res.status(500).json({ error: err.message });
-});
+// serve static if you want to host frontend from same server (optional)
+// const path = require('path');
+// app.use(express.static(path.join(__dirname, 'public')));
 
-// Start server
 app.listen(PORT, () => {
   console.log(`✅ GuardianshipApp Backend running on http://localhost:${PORT}`);
-  console.log(`   Health check: http://localhost:${PORT}/api/health`);
-  console.log(`   Alert endpoint: POST http://localhost:${PORT}/api/notify-alert`);
-  console.log(`   Email notifications: POST http://localhost:${PORT}/api/send-alert-notifications`);
+  if (process.env.SUPABASE_URL) console.log('Supabase URL present');
 });

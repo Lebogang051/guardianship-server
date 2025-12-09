@@ -1,132 +1,121 @@
 const express = require('express');
 const router = express.Router();
+const supabase = require('../supabaseClient');
 const nodemailer = require('nodemailer');
-const { createClient } = require('@supabase/supabase-js');
+
 require('dotenv').config();
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(s => s.trim()).filter(Boolean);
 
+// Configure Nodemailer transport
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: Number(process.env.SMTP_PORT || 465),
+  secure: process.env.SMTP_SECURE === 'true' || true,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS
   }
 });
 
-router.post('/send-alert-notifications', async (req, res) => {
+// Helper: send mail
+async function sendMail(to, subject, html) {
+  try {
+    await transporter.sendMail({
+      from: `"GuardianshipApp" <${process.env.SMTP_USER}>`,
+      to,
+      subject,
+      html
+    });
+    return true;
+  } catch (err) {
+    console.error('Mail error to', to, err.message || err);
+    return false;
+  }
+}
+
+router.post('/notify-alert', async (req, res) => {
   try {
     const { alert } = req.body;
+    if (!alert) return res.status(400).json({ error: 'Missing alert object' });
 
-    if (!alert) {
-      return res.status(400).json({ error: 'No alert data provided' });
-    }
-
-    console.log('📧 Preparing email notifications for alert:', alert.name);
-
-    const { data: users } = await supabase
-      .from('users')
-      .select('email, name')
-      .eq('status', 'approved');
-
-    if (!users || users.length === 0) {
-      console.log('❌ No users to notify');
-      return res.status(400).json({ error: 'No approved users found' });
-    }
-
-    console.log(`📧 Sending emails to ${users.length} users`);
-
+    // Build email HTML
     const emailHTML = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; background: #f5f5f5; }
-          .container { max-width: 600px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 10px; }
-          .alert-header { background: #dc2626; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-          .alert-header h2 { margin: 0; font-size: 24px; }
-          .info-box { background: #f9f9f9; padding: 15px; border-left: 4px solid #667eea; margin: 15px 0; }
-          .info-box strong { color: #667eea; }
-          .button { background: #667eea; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 15px 0; }
-          .footer { color: #666; font-size: 12px; margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="alert-header">
-            <h2>EMERGENCY ALERT</h2>
-            <p style="margin: 10px 0 0 0;">Someone in your community needs help</p>
+      <div style="font-family: Arial, sans-serif; max-width:600px;padding:16px;background:#fff;border-radius:8px;">
+        <h2 style="color:#dc2626">EMERGENCY ALERT</h2>
+        <p><strong>${alert.name || 'Unknown'}</strong> needs help.</p>
+        <p><strong>Location:</strong> ${alert.location || 'Unknown'}<br/>
+           <strong>GPS:</strong> ${alert.latitude}, ${alert.longitude}<br/>
+           <strong>Time:</strong> ${new Date(alert.time).toLocaleString()}</p>
+
+        ${alert.photo ? `<div style="margin:12px 0;"><img src="${alert.photo}" style="max-width:100%;border-radius:8px" /></div>` : ''}
+
+        ${Array.isArray(alert.emergency_contacts) && alert.emergency_contacts.length ? `
+          <div style="background:#f3f4f6;padding:12px;border-radius:8px;margin-top:12px;">
+            <strong>Emergency Contacts:</strong><br/>
+            ${alert.emergency_contacts.map(c => `${c.name || ''} (${c.relation || ''}) • ${c.phone || ''} ${c.email ? '• ' + c.email : ''}`).join('<br/>')}
           </div>
+        ` : ''}
 
-          <h3>${alert.name} needs help!</h3>
+        <p style="margin-top:12px;">
+          <a href="${alert.maps_link}" style="background:#667eea;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;">Open in Maps</a>
+        </p>
 
-          <div class="info-box">
-            <strong>Location:</strong> ${alert.location}<br>
-            <strong>Phone:</strong> ${alert.phone}<br>
-            <strong>Time:</strong> ${new Date(alert.time).toLocaleString()}<br>
-            <strong>GPS:</strong> ${alert.latitude}, ${alert.longitude}
-          </div>
-
-          ${alert.emergency_contacts && alert.emergency_contacts.length > 0 ? `
-            <div class="info-box">
-              <strong>Emergency Contacts:</strong><br>
-              ${alert.emergency_contacts.map(c => `
-                ${c.name} (${c.relation}): ${c.phone}<br>
-              `).join('')}
-            </div>
-          ` : ''}
-
-          <p>
-            <a href="${alert.maps_link}" target="_blank" class="button">
-              View on Maps
-            </a>
-          </p>
-
-          <div style="background: #ffe0e0; padding: 15px; border-radius: 8px; margin: 20px 0;">
-            <strong>If you know this person or see them, please respond immediately!</strong>
-          </div>
-
-          <div class="footer">
-            <p>GuardianshipApp - Community Safety Network</p>
-            <p>Thaba Nchu Community Safety System</p>
-            <p>Support: +27 71 704 0345</p>
-          </div>
-        </div>
-      </body>
-      </html>
+        <hr/>
+        <small>GuardianshipApp — Community Safety</small>
+      </div>
     `;
 
-    let successCount = 0;
+    // 1) Get approved users from Supabase
+    const { data: approvedUsers, error: usersErr } = await supabase
+      .from('users')
+      .select('email,name')
+      .eq('status', 'approved');
 
-    for (const user of users) {
-      try {
-        await transporter.sendMail({
-          from: `GuardianshipApp <${process.env.SMTP_USER}>`,
-          to: user.email,
-          subject: `EMERGENCY ALERT - ${alert.name} needs help!`,
-          html: emailHTML
-        });
-        console.log(`✅ Email sent to ${user.email}`);
-        successCount++;
-      } catch (err) {
-        console.error(`❌ Failed to send to ${user.email}:`, err.message);
-      }
+    if (usersErr) {
+      console.error('Error fetching approved users:', usersErr);
     }
 
-    console.log(`📊 Result: ${successCount} emails sent`);
+    // Build list of recipients: admins + approved users + emergency contacts (if email present)
+    const recipients = new Set();
+    ADMIN_EMAILS.forEach(e => recipients.add(e));
+    (approvedUsers || []).forEach(u => u.email && recipients.add(u.email));
 
-    res.json({
-      success: true,
-      sentCount: successCount,
-      totalUsers: users.length
+    // Add emergency contact emails if provided
+    (alert.emergency_contacts || []).forEach(c => {
+      if (c.email) recipients.add(c.email);
     });
 
+    const recipientsArray = [...recipients];
+
+    // Send emails in batches (simple sequential to avoid SMTP throttle)
+    let success = 0;
+    for (const to of recipientsArray) {
+      const ok = await sendMail(to, `EMERGENCY ALERT - ${alert.name || 'Someone needs help'}`, emailHTML);
+      if (ok) success++;
+    }
+
+    // Optionally, save a record to 'alerts' table for audit (if you want server to keep a copy)
+    try {
+      await supabase.from('alerts_log').insert([{
+        name: alert.name || null,
+        phone: alert.phone || null,
+        latitude: alert.latitude || null,
+        longitude: alert.longitude || null,
+        location: alert.location || null,
+        photo: alert.photo || null,
+        time: alert.time || new Date().toISOString(),
+        raw: alert
+      }]);
+    } catch (err) {
+      // If table doesn't exist, ignore
+      console.warn('alerts_log insert failed (ok to ignore if table missing).', err.message || err);
+    }
+
+    return res.json({ success: true, emailed: success, totalTargets: recipientsArray.length });
   } catch (err) {
-    console.error('Error:', err);
-    res.status(500).json({ error: err.message });
+    console.error('notify-alert error', err);
+    return res.status(500).json({ error: err.message || String(err) });
   }
 });
 
